@@ -1,11 +1,5 @@
 name: Unity Build & Deploy (reusable)
 
-# 중앙 빌드/배포 로직. 각 팀 레포의 ci.yml이 uses:로 호출.
-#  - 빌드: GameCI(unity-builder), Library 캐시, 아티팩트 업로드 (항상)
-#  - CD-1: 태그(v*) push면 GitHub Release에 zip 첨부
-#  - CD-2: deployPath 주면(+DEPLOY_* 시크릿) SCP로 자체 서버 업로드 (서버 생기면)
-# 사전: org Secret UNITY_LICENSE (Personal .ulf). secrets: inherit 로 전달받음.
-
 on:
   workflow_call:
     inputs:
@@ -20,7 +14,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # Unity 에디터 Docker 이미지(10GB+)가 러너 기본 디스크를 넘어 'no space left' 나는 것 방지
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup /usr/local/share/boost
@@ -51,7 +44,6 @@ jobs:
           path: build/${{ inputs.targetPlatform }}
           retention-days: 14
 
-      # ── CD-1: 태그면 Release zip ──
       - name: Zip build
         if: startsWith(github.ref, 'refs/tags/')
         run: cd build && zip -r ../${{ github.event.repository.name }}-${{ inputs.targetPlatform }}-${{ github.ref_name }}.zip ${{ inputs.targetPlatform }}
@@ -62,7 +54,6 @@ jobs:
         with:
           files: "*.zip"
 
-      # ── CD-2: 자체 서버 (deployPath 지정 시 동작) ──
       - name: Deploy to server (SCP)
         if: ${{ inputs.deployPath != '' && startsWith(github.ref, 'refs/tags/') }}
         uses: appleboy/scp-action@v0.1.7
