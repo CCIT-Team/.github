@@ -1,0 +1,67 @@
+name: Unity Build & Deploy (reusable)
+
+# 중앙 빌드/배포 로직. 각 팀 레포의 ci.yml이 uses:로 호출.
+#  - 빌드: GameCI(unity-builder), Library 캐시, 아티팩트 업로드 (항상)
+#  - CD-1: 태그(v*) push면 GitHub Release에 zip 첨부
+#  - CD-2: deployPath 주면(+DEPLOY_* 시크릿) SCP로 자체 서버 업로드 (서버 생기면)
+# 사전: org Secret UNITY_LICENSE (Personal .ulf). secrets: inherit 로 전달받음.
+
+on:
+  workflow_call:
+    inputs:
+      unityVersion:   { type: string, required: true }
+      targetPlatform: { type: string, default: StandaloneWindows64 }
+      deployPath:     { type: string, default: "" }
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { lfs: true }
+
+      - uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-${{ inputs.targetPlatform }}-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: Library-${{ inputs.targetPlatform }}-
+
+      - uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE:  ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL:    ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          unityVersion:   ${{ inputs.unityVersion }}
+          targetPlatform: ${{ inputs.targetPlatform }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ inputs.targetPlatform }}
+          path: build/${{ inputs.targetPlatform }}
+          retention-days: 14
+
+      # ── CD-1: 태그면 Release zip ──
+      - name: Zip build
+        if: startsWith(github.ref, 'refs/tags/')
+        run: cd build && zip -r ../${{ github.event.repository.name }}-${{ inputs.targetPlatform }}-${{ github.ref_name }}.zip ${{ inputs.targetPlatform }}
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.zip"
+
+      # ── CD-2: 자체 서버 (deployPath 지정 시 동작) ──
+      - name: Deploy to server (SCP)
+        if: ${{ inputs.deployPath != '' && startsWith(github.ref, 'refs/tags/') }}
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: "*.zip"
+          target: ${{ inputs.deployPath }}
