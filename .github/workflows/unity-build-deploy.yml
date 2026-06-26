@@ -20,6 +20,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # Unity 에디터 Docker 이미지(10GB+)가 러너 기본 디스크를 넘어 'no space left' 나는 것 방지
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup /usr/local/share/boost
+          sudo docker image prune --all --force || true
+          df -h /
+
       - uses: actions/checkout@v4
         with: { lfs: true }
 
