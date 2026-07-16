@@ -1,17 +1,56 @@
-name: Unity Build & Deploy (reusable)
+name: Unity Build & Release (reusable)
+
+# 조직 공용 재사용 워크플로 (CCIT-Team/.github)
+# 각 리포는 얇은 호출부(ci.yml)에서 이걸 호출한다.
+# 필요한 조직/리포 시크릿: UNITY_LICENSE(.ulf 내용), UNITY_EMAIL, UNITY_PASSWORD
+#   (배포 쓰면) DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY
 
 on:
   workflow_call:
     inputs:
-      unityVersion:   { type: string, required: true }
+      unityVersion:   { type: string, required: true }                 # 예: 2022.3.62f3
       targetPlatform: { type: string, default: StandaloneWindows64 }
-      deployPath:     { type: string, default: "" }
+      buildName:      { type: string, default: "" }                    # 실행파일/폴더 이름(비우면 리포명). 예: "De.co" -> De.co.exe
+      projectPath:    { type: string, default: "." }                   # 서브폴더 프로젝트면 "Project" 등
+      runTests:       { type: boolean, default: false }                # 테스트 있는 리포만 true
+      deployPath:     { type: string, default: "" }                    # SCP 배포 경로(옵션)
+
+# 같은 브랜치/태그에서 새 푸시가 오면 이전 실행 취소 (중복 빌드 방지)
+concurrency:
+  group: unity-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: write   # 릴리스 업로드용
 
 jobs:
+  # -------- 1) 테스트 (opt-in) --------
+  test:
+    if: ${{ inputs.runTests }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { lfs: true }
+      - uses: actions/cache@v4
+        with:
+          path: ${{ inputs.projectPath }}/Library
+          key: Library-test-${{ hashFiles(format('{0}/Assets/**', inputs.projectPath), format('{0}/Packages/**', inputs.projectPath), format('{0}/ProjectSettings/**', inputs.projectPath)) }}
+          restore-keys: Library-test-
+      - uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE:  ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL:    ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          unityVersion: ${{ inputs.unityVersion }}
+          projectPath:  ${{ inputs.projectPath }}
+
+  # -------- 2) 빌드 (+ 태그면 릴리스) --------
   build:
+    needs: test
+    # 테스트를 통과했거나(runTests=true) 아예 건너뛴 경우(runTests=false) 모두 빌드.
+    # 테스트가 '실패'했을 때만 빌드 스킵.
+    if: ${{ !cancelled() && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - name: Free disk space
@@ -25,8 +64,8 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: Library
-          key: Library-${{ inputs.targetPlatform }}-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          path: ${{ inputs.projectPath }}/Library
+          key: Library-${{ inputs.targetPlatform }}-${{ hashFiles(format('{0}/Assets/**', inputs.projectPath), format('{0}/Packages/**', inputs.projectPath), format('{0}/ProjectSettings/**', inputs.projectPath)) }}
           restore-keys: Library-${{ inputs.targetPlatform }}-
 
       - uses: game-ci/unity-builder@v4
@@ -37,29 +76,41 @@ jobs:
         with:
           unityVersion:   ${{ inputs.unityVersion }}
           targetPlatform: ${{ inputs.targetPlatform }}
+          projectPath:    ${{ inputs.projectPath }}
+          buildName:      ${{ inputs.buildName || github.event.repository.name }}   # 실행파일 이름 -> <이름>.exe
 
+      # 다운로드/실행용 zip 생성 (push든 tag든 항상)
+      # 폴더를 게임 이름으로 바꿔서 압축 -> 풀면 "<이름>/<이름>.exe" 구조
+      - name: Package build
+        run: |
+          NAME="${{ inputs.buildName }}"
+          [ -z "$NAME" ] && NAME="${{ github.event.repository.name }}"
+          sudo mv "build/${{ inputs.targetPlatform }}" "build/$NAME"
+          (cd build && zip -r "../${NAME}-${{ github.ref_name }}.zip" "$NAME")
+          echo "ZIP_NAME=${NAME}-${{ github.ref_name }}.zip" >> "$GITHUB_ENV"
+
+      # 매 실행마다 다운로드 가능한 아티팩트 (14일 보관) — 검증/수동 실행용
       - uses: actions/upload-artifact@v4
         with:
-          name: build-${{ inputs.targetPlatform }}
-          path: build/${{ inputs.targetPlatform }}
+          name: ${{ env.ZIP_NAME }}
+          path: "*.zip"
           retention-days: 14
 
-      - name: Zip build
-        if: startsWith(github.ref, 'refs/tags/')
-        run: cd build && zip -r ../${{ github.event.repository.name }}-${{ inputs.targetPlatform }}-${{ github.ref_name }}.zip ${{ inputs.targetPlatform }}
-
+      # 태그(vX.Y.Z) push일 때만: GitHub Releases에 zip 첨부 (영구 버전관리)
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: "*.zip"
+          generate_release_notes: true
 
+      # 태그 + deployPath 지정 시에만: 서버로 SCP 배포 (옵션)
       - name: Deploy to server (SCP)
         if: ${{ inputs.deployPath != '' && startsWith(github.ref, 'refs/tags/') }}
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
+          host:     ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          source: "*.zip"
-          target: ${{ inputs.deployPath }}
+          key:      ${{ secrets.DEPLOY_SSH_KEY }}
+          source:   "*.zip"
+          target:   ${{ inputs.deployPath }}
