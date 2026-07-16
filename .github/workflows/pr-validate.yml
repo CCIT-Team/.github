@@ -1,0 +1,52 @@
+name: PR Validation (reusable)
+
+# PR 검증 재사용 워크플로 (CCIT-Team/.github)
+# Unity 불필요 · 스크립트 기반 · 수초 내 완료 (무료 사용량 거의 안 씀)
+
+on:
+  workflow_call:
+    inputs:
+      projectPath: { type: string, default: "." }
+
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: PR 검증 (경량)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: 병합 충돌 마커 검사
+        run: |
+          if git grep -nIE '^(<<<<<<<|>>>>>>>)' -- . ; then
+            echo "::error::병합 충돌 마커가 커밋에 남아 있습니다. 충돌 해결 후 다시 커밋하세요."
+            exit 1
+          fi
+          echo "병합 충돌 마커 없음 ✅"
+
+      - name: .meta 파일 정합성 검사
+        run: |
+          ASSETS="Assets"
+          [ "${{ inputs.projectPath }}" != "." ] && ASSETS="${{ inputs.projectPath }}/Assets"
+          git ls-files -- "$ASSETS" > all.txt || true
+          orphans=$(grep '\.meta$' all.txt | while read -r m; do a="${m%.meta}"; [ -e "$a" ] || echo "$m"; done)
+          missing=$(grep -v '\.meta$' all.txt | while read -r f; do b=$(basename "$f"); case "$b" in .*) continue;; esac; [ -e "${f}.meta" ] || echo "$f"; done)
+          fail=0
+          if [ -n "$orphans" ]; then echo "::error::대상 에셋이 없는 고아 .meta 파일:"; echo "$orphans"; fail=1; fi
+          if [ -n "$missing" ]; then echo "::error::.meta 파일이 누락된 에셋:"; echo "$missing"; fail=1; fi
+          [ "$fail" = 0 ] && echo ".meta 정합성 OK ✅"
+          exit $fail
+
+      - name: 대용량 파일 검사 (100MB 초과 · LFS 필요)
+        run: |
+          big=""
+          while IFS= read -r f; do
+            sz=$(wc -c < "$f" 2>/dev/null || echo 0)
+            if [ "$sz" -gt 104857600 ]; then big="${big}${f} ($((sz/1048576))MB)"$'\n'; fi
+          done < <(git ls-files)
+          if [ -n "$big" ]; then echo "::error::100MB 초과 파일(LFS로 관리 필요):"; printf '%s' "$big"; exit 1; fi
+          echo "대용량 파일 없음 ✅"
