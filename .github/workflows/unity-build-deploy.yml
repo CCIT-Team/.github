@@ -85,9 +85,11 @@ jobs:
         run: |
           NAME="${{ inputs.buildName }}"
           [ -z "$NAME" ] && NAME="${{ github.event.repository.name }}"
+          # PR이면 ref_name이 "5/merge" 처럼 '/' 포함 → 파일명용으로 '-' 치환
+          REF="${{ github.ref_name }}"; REF="${REF//\//-}"
           sudo mv "build/${{ inputs.targetPlatform }}" "build/$NAME"
-          (cd build && zip -r "../${NAME}-${{ github.ref_name }}.zip" "$NAME")
-          echo "ZIP_NAME=${NAME}-${{ github.ref_name }}.zip" >> "$GITHUB_ENV"
+          (cd build && zip -r "../${NAME}-${REF}.zip" "$NAME")
+          echo "ZIP_NAME=${NAME}-${REF}.zip" >> "$GITHUB_ENV"
 
       # 매 실행마다 다운로드 가능한 아티팩트 (14일 보관) — 검증/수동 실행용
       - uses: actions/upload-artifact@v4

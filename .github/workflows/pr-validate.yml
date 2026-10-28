@@ -32,11 +32,13 @@ jobs:
         run: |
           ASSETS="Assets"
           [ "${{ inputs.projectPath }}" != "." ] && ASSETS="${{ inputs.projectPath }}/Assets"
-          git ls-files -- "$ASSETS" > all.txt || true
-          orphans=$(grep '\.meta$' all.txt | while read -r m; do a="${m%.meta}"; [ -e "$a" ] || echo "$m"; done)
-          missing=$(grep -v '\.meta$' all.txt | while read -r f; do b=$(basename "$f"); case "$b" in .*) continue;; esac; [ -e "${f}.meta" ] || echo "$f"; done)
+          # quotePath=false: 한글 파일명이 "\353..." 로 이스케이프되어 오탐 나는 것 방지
+          git -c core.quotePath=false ls-files -- "$ASSETS" > all.txt || true
+          orphans=$(grep '\.meta$' all.txt | while IFS= read -r m; do a="${m%.meta}"; [ -e "$a" ] || echo "$m"; done)
+          missing=$(grep -v '\.meta$' all.txt | while IFS= read -r f; do b=$(basename "$f"); case "$b" in .*) continue;; esac; [ -e "${f}.meta" ] || echo "$f"; done)
           fail=0
-          if [ -n "$orphans" ]; then echo "::error::대상 에셋이 없는 고아 .meta 파일:"; echo "$orphans"; fail=1; fi
+          # 고아 .meta는 대부분 빈 폴더(git은 빈 폴더 미추적)라 Unity가 알아서 정리 → 경고만
+          if [ -n "$orphans" ]; then echo "::warning::대상 에셋이 없는 고아 .meta 파일(빈 폴더 등):"; echo "$orphans"; fi
           if [ -n "$missing" ]; then echo "::error::.meta 파일이 누락된 에셋:"; echo "$missing"; fail=1; fi
           [ "$fail" = 0 ] && echo ".meta 정합성 OK ✅"
           exit $fail
@@ -47,6 +49,6 @@ jobs:
           while IFS= read -r f; do
             sz=$(wc -c < "$f" 2>/dev/null || echo 0)
             if [ "$sz" -gt 104857600 ]; then big="${big}${f} ($((sz/1048576))MB)"$'\n'; fi
-          done < <(git ls-files)
+          done < <(git -c core.quotePath=false ls-files)
           if [ -n "$big" ]; then echo "::error::100MB 초과 파일(LFS로 관리 필요):"; printf '%s' "$big"; exit 1; fi
           echo "대용량 파일 없음 ✅"
